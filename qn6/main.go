@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -17,6 +20,7 @@ import (
 type Graph struct {
 	N         int
 	AdjList   [][]int // adjList[i] = list of nodes i links to
+	InDegree  []int
 	OutDegree []int
 	IDMap     map[int]int // original ID -> contiguous index
 	ReverseID []int       // contiguous index -> original ID
@@ -70,16 +74,91 @@ func parseGraph(filename string) (*Graph, error) {
 	N := len(sortedNodes)
 	adjList := make([][]int, N)
 	outDegree := make([]int, N)
+	inDegree := make([]int, N)
 
 	for _, e := range edges {
 		i := idMap[e.from]
 		j := idMap[e.to]
 		adjList[i] = append(adjList[i], j)
 		outDegree[i]++
+		inDegree[j]++
 	}
 
 	fmt.Printf("Parsed graph: %d nodes, %d edges\n", N, len(edges))
-	return &Graph{N, adjList, outDegree, idMap, reverseID}, nil
+	return &Graph{N, adjList, inDegree, outDegree, idMap, reverseID}, nil
+}
+
+// parseJSONGraph reads a web graph from a JSON file formatted as:
+//
+//	{ "https://example.com": ["https://a.org", "https://b.edu"], ... }
+//
+// Returns the graph, a mapping from node index to URL, and robots.txt
+// permission map (all allowed by default; caller can override).
+func parseJSONGraph(filename string) (*Graph, map[int]string, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var adjMap map[string][]string
+	if err := json.Unmarshal(data, &adjMap); err != nil {
+		return nil, nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	// Collect all unique URLs (keys + values)
+	urlSet := make(map[string]bool)
+	for src, dsts := range adjMap {
+		urlSet[src] = true
+		for _, dst := range dsts {
+			urlSet[dst] = true
+		}
+	}
+
+	// Sort for deterministic ordering
+	urls := make([]string, 0, len(urlSet))
+	for u := range urlSet {
+		urls = append(urls, u)
+	}
+	sort.Strings(urls)
+
+	urlToIdx := make(map[string]int, len(urls))
+	for i, u := range urls {
+		urlToIdx[u] = i
+	}
+
+	N := len(urls)
+	adjList := make([][]int, N)
+	outDegree := make([]int, N)
+	inDegree := make([]int, N)
+	idMap := make(map[int]int, N)
+	reverseID := make([]int, N)
+	nodeNames := make(map[int]string, N)
+
+	for i, u := range urls {
+		idMap[i] = i
+		reverseID[i] = i
+		nodeNames[i] = u
+	}
+
+	for src, dsts := range adjMap {
+		i := urlToIdx[src]
+		for _, dst := range dsts {
+			j := urlToIdx[dst]
+			adjList[i] = append(adjList[i], j)
+			outDegree[i]++
+			inDegree[j]++
+		}
+	}
+
+	g := &Graph{N, adjList, inDegree, outDegree, idMap, reverseID}
+	fmt.Printf("Parsed JSON graph: %d nodes, %d edges\n", N, func() int {
+		total := 0
+		for _, d := range outDegree {
+			total += d
+		}
+		return total
+	}())
+	return g, nodeNames, nil
 }
 
 func pageRankIterative(g *Graph, p float64, epsilon float64, maxIter int) []float64 {
@@ -209,23 +288,122 @@ func printTopK(r []float64, reverseID []int, k int, label string) {
 	}
 }
 
-// crawlPriority computes a crawl priority score for each page.
-// It combines PageRank (authority) with content diversity (out-degree to unique pages).
-// Pages that block crawling are filtered out.
-// Heuristic: score = alpha * normalized_pagerank + (1-alpha) * normalized_out_degree
-// This favors authoritative pages that also link broadly, making them good
-// entry points for discovering more high-quality content.
-func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k int, alpha float64, nodeNames map[int]string) {
-	type candidate struct {
-		nodeID    int
-		pagerank  float64
-		outDegree int
-		score     float64
+// domainTrust returns a trust score based on TLD.
+// .edu and .gov domains are more likely to contain factual, well-curated content.
+// .org domains (non-profits, foundations) tend to have reliable information.
+// Commercial and other domains get a baseline score.
+func domainTrust(urlStr string) (float64, string) {
+	host := urlStr
+	if u, err := url.Parse(urlStr); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	host = strings.ToLower(host)
+
+	switch {
+	case strings.HasSuffix(host, ".edu"):
+		return 1.0, ".edu (academic)"
+	case strings.HasSuffix(host, ".gov"):
+		return 1.0, ".gov (government)"
+	case strings.HasSuffix(host, ".org"):
+		return 0.7, ".org (non-profit)"
+	case strings.HasSuffix(host, ".io"):
+		return 0.4, ".io (tech)"
+	default:
+		return 0.3, "commercial/other"
+	}
+}
+
+// checkRobotsTxt fetches robots.txt for the given URL's host and checks
+// whether the specified bot (e.g. "GPTBot") is allowed to crawl.
+// Returns true if crawling is allowed, false if disallowed.
+// On any error (network, timeout, no robots.txt), assumes allowed.
+func checkRobotsTxt(rawURL string, botName string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return true // can't determine host, assume allowed
 	}
 
-	// Find max pagerank and max out-degree for normalization
+	robotsURL := fmt.Sprintf("%s://%s/robots.txt", u.Scheme, u.Host)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(robotsURL)
+	if err != nil || resp.StatusCode != 200 {
+		return true // no robots.txt or unreachable, assume allowed
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	currentAgent := ""
+	botNameLower := strings.ToLower(botName)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(strings.ToLower(line), "user-agent:") {
+			currentAgent = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
+			currentAgent = strings.ToLower(currentAgent)
+		} else if strings.HasPrefix(strings.ToLower(line), "disallow:") {
+			path := strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
+			if (currentAgent == botNameLower || currentAgent == "*") && path == "/" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// crawlCandidate holds all scoring components for a crawl target.
+type crawlCandidate struct {
+	nodeID      int
+	name        string
+	pagerank    float64
+	normPR      float64
+	inDegree    int
+	normID      float64
+	outDegree   int
+	normOD      float64
+	trustScore  float64
+	trustLabel  string
+	finalScore  float64
+}
+
+// Weights for the multi-factor heuristic
+type crawlWeights struct {
+	authority float64 // PageRank weight
+	demand    float64 // in-degree weight
+	diversity float64 // out-degree weight
+	trust     float64 // domain trust weight
+}
+
+// crawlPriority computes a crawl priority score for each page using a
+// multi-factor heuristic that combines:
+//   - Authority (PageRank): how trusted/important is the page
+//   - Demand (in-degree): how many pages link here (independent validation)
+//   - Diversity (out-degree): how many outlinks (good crawl frontier entry point)
+//   - Domain trust: TLD-based quality signal (.edu/.gov > .org > .com)
+//
+// Pages that block crawling via robots.txt are excluded before ranking.
+func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k int, w crawlWeights, nodeNames map[int]string) {
+	hasDomainInfo := false
+	for _, name := range nodeNames {
+		if strings.Contains(name, ".") {
+			hasDomainInfo = true
+			break
+		}
+	}
+
+	// If no domain info available, redistribute trust weight to authority
+	if !hasDomainInfo {
+		w.authority += w.trust
+		w.trust = 0
+	}
+
+	// Find max values for normalization (only among crawlable pages)
 	maxPR := 0.0
 	maxOD := 0
+	maxInD := 0
 	for i := 0; i < g.N; i++ {
 		origID := g.ReverseID[i]
 		if !allowsCrawling[origID] {
@@ -237,170 +415,310 @@ func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k 
 		if g.OutDegree[i] > maxOD {
 			maxOD = g.OutDegree[i]
 		}
+		if g.InDegree[i] > maxInD {
+			maxInD = g.InDegree[i]
+		}
 	}
 
-	if maxPR == 0 || maxOD == 0 {
+	if maxPR == 0 {
 		fmt.Println("No crawlable pages found.")
 		return
 	}
 
-	var candidates []candidate
+	var candidates []crawlCandidate
 	for i := 0; i < g.N; i++ {
 		origID := g.ReverseID[i]
 		if !allowsCrawling[origID] {
 			continue
 		}
+
+		name := fmt.Sprintf("%d", origID)
+		if n, ok := nodeNames[origID]; ok {
+			name = n
+		}
+
 		normPR := pagerank[i] / maxPR
-		normOD := float64(g.OutDegree[i]) / float64(maxOD)
-		score := alpha*normPR + (1-alpha)*normOD
-		candidates = append(candidates, candidate{origID, pagerank[i], g.OutDegree[i], score})
+		normOD := 0.0
+		if maxOD > 0 {
+			normOD = float64(g.OutDegree[i]) / float64(maxOD)
+		}
+		normInD := 0.0
+		if maxInD > 0 {
+			normInD = float64(g.InDegree[i]) / float64(maxInD)
+		}
+
+		trustScore := 0.0
+		trustLabel := "N/A"
+		if hasDomainInfo {
+			trustScore, trustLabel = domainTrust(name)
+		}
+
+		score := w.authority*normPR + w.demand*normInD + w.diversity*normOD + w.trust*trustScore
+
+		candidates = append(candidates, crawlCandidate{
+			nodeID: origID, name: name,
+			pagerank: pagerank[i], normPR: normPR,
+			inDegree: g.InDegree[i], normID: normInD,
+			outDegree: g.OutDegree[i], normOD: normOD,
+			trustScore: trustScore, trustLabel: trustLabel,
+			finalScore: score,
+		})
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
+		return candidates[i].finalScore > candidates[j].finalScore
 	})
 
-	fmt.Printf("\nTop %d URLs to crawl (alpha=%.2f):\n", k, alpha)
-	fmt.Printf("%-6s %-20s %-14s %-10s %s\n", "Rank", "Page", "PageRank", "OutDegree", "Score")
-	fmt.Println(strings.Repeat("-", 68))
+	fmt.Printf("\n=== Top %d URLs to Crawl for AI Training Data ===\n", k)
+	fmt.Printf("Weights: authority=%.2f, demand=%.2f, diversity=%.2f, trust=%.2f\n\n",
+		w.authority, w.demand, w.diversity, w.trust)
+
 	for i := 0; i < k && i < len(candidates); i++ {
 		c := candidates[i]
-		name := fmt.Sprintf("%d", c.nodeID)
-		if n, ok := nodeNames[c.nodeID]; ok {
-			name = n
+		fmt.Printf("Rank %d: %s\n", i+1, c.name)
+		fmt.Printf("  PageRank:     %.6f  (normalized: %.3f) [weight: %.2f]\n", c.pagerank, c.normPR, w.authority)
+		fmt.Printf("  In-degree:    %-8d (normalized: %.3f) [weight: %.2f]\n", c.inDegree, c.normID, w.demand)
+		fmt.Printf("  Out-degree:   %-8d (normalized: %.3f) [weight: %.2f]\n", c.outDegree, c.normOD, w.diversity)
+		if hasDomainInfo {
+			fmt.Printf("  Domain trust: %-8s (score: %.2f)     [weight: %.2f]\n", c.trustLabel, c.trustScore, w.trust)
 		}
-		fmt.Printf("%-6d %-20s %-14.10f %-10d %.6f\n", i+1, name, c.pagerank, c.outDegree, c.score)
+		fmt.Printf("  Final score:  %.4f\n", c.finalScore)
+
+		// Per-page reasoning
+		reasons := []string{}
+		if c.normPR > 0.7 {
+			reasons = append(reasons, "highly authoritative (many pages endorse it)")
+		} else if c.normPR > 0.4 {
+			reasons = append(reasons, "moderately authoritative")
+		}
+		if c.normOD > 0.7 {
+			reasons = append(reasons, "broad outlinks (good crawl frontier)")
+		}
+		if c.normID > 0.7 {
+			reasons = append(reasons, "high demand (widely referenced)")
+		}
+		if c.trustScore >= 0.7 {
+			reasons = append(reasons, fmt.Sprintf("trusted domain (%s)", c.trustLabel))
+		}
+		if len(reasons) > 0 {
+			fmt.Printf("  Why crawl:    %s\n", strings.Join(reasons, "; "))
+		}
+		fmt.Println()
 	}
 
-	fmt.Println("\n--- Why high-PageRank pages yield better training data ---")
-	fmt.Println("High-PageRank pages are linked to by many other pages, indicating")
-	fmt.Println("they are authoritative and widely trusted. This correlates with")
-	fmt.Println("higher content quality, factual accuracy, and topical breadth —")
-	fmt.Println("all desirable properties for generative AI training data.")
-	fmt.Println("")
-	fmt.Println("--- Heuristic: Authority-Diversity Score ---")
-	fmt.Println("score = alpha * normalized_pagerank + (1-alpha) * normalized_out_degree")
-	fmt.Println("")
-	fmt.Println("Pages with high out-degree link to many other pages, making them")
-	fmt.Println("valuable entry points for discovering additional crawlable content.")
-	fmt.Println("Combining authority (PageRank) with diversity (out-degree) ensures")
-	fmt.Println("we prioritize pages that are both high-quality and useful for")
-	fmt.Println("expanding the crawl frontier. Pages that disallow crawling via")
-	fmt.Println("robots.txt are excluded before ranking.")
+	// Print explanations
+	fmt.Println("--- Why High-PageRank Pages Yield Better Training Data ---")
+	fmt.Println()
+	fmt.Println("PageRank measures recursive authority: a page is important if many")
+	fmt.Println("important pages link to it. For AI training, this matters because:")
+	fmt.Println("  1. Authority correlates with factual accuracy — widely-cited pages")
+	fmt.Println("     undergo more scrutiny and correction over time.")
+	fmt.Println("  2. High-PageRank pages tend to cover topics broadly and clearly,")
+	fmt.Println("     since they serve as reference material for many other sites.")
+	fmt.Println("  3. Training on authoritative text reduces hallucination risk,")
+	fmt.Println("     as the model learns patterns from reliable sources.")
+	fmt.Println("  4. These pages are often well-structured (headings, paragraphs,")
+	fmt.Println("     citations), making them easier to parse into clean training data.")
+	fmt.Println()
+	fmt.Println("--- Heuristic: Authority-Demand-Diversity-Trust (ADDT) Score ---")
+	fmt.Println()
+	fmt.Println("  score = w1*PageRank + w2*InDegree + w3*OutDegree + w4*DomainTrust")
+	fmt.Println()
+	fmt.Println("This multi-factor heuristic finds pages that permit crawling and are")
+	fmt.Println("likely to contain high-quality training data by combining:")
+	fmt.Println("  - Authority (PageRank): recursive trust from the web graph")
+	fmt.Println("  - Demand (in-degree): direct link count as independent validation")
+	fmt.Println("  - Diversity (out-degree): broad outlinks for crawl frontier expansion")
+	fmt.Println("  - Domain trust: TLD-based prior (.edu/.gov > .org > commercial)")
+	fmt.Println()
+	fmt.Println("Pages that disallow crawling via robots.txt (checking for GPTBot and")
+	fmt.Println("wildcard User-agent rules) are excluded before scoring.")
 }
 
 // demoCrawl runs the crawl prioritization on a small example graph
-func demoCrawl() {
+func demoCrawl(fetchRobots bool) {
 	fmt.Println("=== AI Web Crawl Prioritization Demo ===")
 	fmt.Println()
 
-	// Small directed web graph
-	urls := []string{
-		"example.com",        // 0
-		"news.org",           // 1
-		"wiki.edu",           // 2
-		"blog.io",            // 3
-		"shop.com",           // 4
-		"research.gov",       // 5
-		"social.net",         // 6
-		"archive.org",        // 7
+	// Small directed web graph as a dictionary
+	webGraph := map[string][]string{
+		"https://en.wikipedia.org":      {"https://www.example.com", "https://www.nist.gov", "https://archive.org"},
+		"https://www.example.com":       {"https://en.wikipedia.org", "https://news.ycombinator.com", "https://blog.github.io"},
+		"https://www.nist.gov":          {"https://en.wikipedia.org", "https://arxiv.org", "https://archive.org"},
+		"https://news.ycombinator.com":  {"https://www.example.com", "https://en.wikipedia.org", "https://blog.github.io"},
+		"https://blog.github.io":        {"https://www.example.com", "https://news.ycombinator.com"},
+		"https://www.amazon.com":        {"https://www.example.com", "https://blog.github.io"},
+		"https://www.facebook.com":      {"https://www.example.com", "https://news.ycombinator.com", "https://blog.github.io", "https://www.amazon.com"},
+		"https://arxiv.org":             {"https://en.wikipedia.org", "https://www.nist.gov"},
+		"https://archive.org":           {"https://en.wikipedia.org", "https://arxiv.org"},
+		"https://mit.edu":               {"https://en.wikipedia.org", "https://arxiv.org", "https://www.nist.gov", "https://archive.org"},
 	}
 
-	// Edges: from -> to
-	edges := []struct{ from, to int }{
-		{0, 1}, {0, 2}, {0, 5},       // example.com links to news, wiki, research
-		{1, 0}, {1, 2}, {1, 3},       // news.org links to example, wiki, blog
-		{2, 0}, {2, 5}, {2, 7},       // wiki.edu links to example, research, archive
-		{3, 0}, {3, 1},               // blog.io links to example, news
-		{4, 0}, {4, 3},               // shop.com links to example, blog
-		{5, 2}, {5, 7},               // research.gov links to wiki, archive
-		{6, 0}, {6, 1}, {6, 3}, {6, 4}, // social.net links broadly
-		{7, 2}, {7, 5},               // archive.org links to wiki, research
+	// Print the graph
+	fmt.Println("Web graph (dictionary of URLs -> outlinks):")
+	// Sort keys for deterministic output
+	sortedKeys := make([]string, 0, len(webGraph))
+	for k := range webGraph {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+	for _, u := range sortedKeys {
+		fmt.Printf("  %s\n", u)
+		for _, link := range webGraph[u] {
+			fmt.Printf("    -> %s\n", link)
+		}
+	}
+
+	// Build graph
+	urlSet := make(map[string]bool)
+	for src, dsts := range webGraph {
+		urlSet[src] = true
+		for _, dst := range dsts {
+			urlSet[dst] = true
+		}
+	}
+	urls := make([]string, 0, len(urlSet))
+	for u := range urlSet {
+		urls = append(urls, u)
+	}
+	sort.Strings(urls)
+
+	urlToIdx := make(map[string]int, len(urls))
+	for i, u := range urls {
+		urlToIdx[u] = i
 	}
 
 	N := len(urls)
 	adjList := make([][]int, N)
 	outDegree := make([]int, N)
+	inDegree := make([]int, N)
 	reverseID := make([]int, N)
+	idMap := make(map[int]int, N)
+	nodeNames := make(map[int]string, N)
 
-	for i := 0; i < N; i++ {
+	for i, u := range urls {
 		reverseID[i] = i
+		idMap[i] = i
+		nodeNames[i] = u
 	}
-	for _, e := range edges {
-		adjList[e.from] = append(adjList[e.from], e.to)
-		outDegree[e.from]++
-	}
-
-	g := &Graph{
-		N:         N,
-		AdjList:   adjList,
-		OutDegree: outDegree,
-		IDMap:     make(map[int]int),
-		ReverseID: reverseID,
-	}
-	for i := 0; i < N; i++ {
-		g.IDMap[i] = i
-	}
-
-	// Print the graph
-	fmt.Println("Graph:")
-	for i, url := range urls {
-		links := []string{}
-		for _, j := range adjList[i] {
-			links = append(links, urls[j])
+	for src, dsts := range webGraph {
+		i := urlToIdx[src]
+		for _, dst := range dsts {
+			j := urlToIdx[dst]
+			adjList[i] = append(adjList[i], j)
+			outDegree[i]++
+			inDegree[j]++
 		}
-		fmt.Printf("  %s -> %s\n", url, strings.Join(links, ", "))
 	}
 
-	// robots.txt simulation
-	allowsCrawling := map[int]bool{
-		0: true,  // example.com — allows
-		1: true,  // news.org — allows
-		2: true,  // wiki.edu — allows
-		3: true,  // blog.io — allows
-		4: false, // shop.com — blocks GPTBot
-		5: true,  // research.gov — allows
-		6: false, // social.net — blocks GPTBot
-		7: true,  // archive.org — allows
-	}
+	g := &Graph{N, adjList, inDegree, outDegree, idMap, reverseID}
 
-	fmt.Println("\nrobots.txt permissions:")
-	for i, url := range urls {
-		status := "ALLOW"
-		if !allowsCrawling[i] {
-			status = "BLOCK"
+	// Check robots.txt permissions
+	fmt.Println("\nChecking robots.txt permissions for GPTBot...")
+	allowsCrawling := make(map[int]bool, N)
+	if fetchRobots {
+		for i, u := range urls {
+			allowed := checkRobotsTxt(u, "GPTBot")
+			allowsCrawling[i] = allowed
+			status := "ALLOW"
+			if !allowed {
+				status = "BLOCK"
+			}
+			fmt.Printf("  %-40s %s\n", u, status)
 		}
-		fmt.Printf("  %-20s %s\n", url, status)
+	} else {
+		// Simulated robots.txt: major social/e-commerce platforms typically block AI bots
+		blocked := map[string]bool{
+			"https://www.amazon.com":   true,
+			"https://www.facebook.com": true,
+		}
+		for i, u := range urls {
+			if blocked[u] {
+				allowsCrawling[i] = false
+				fmt.Printf("  %-40s BLOCK (simulated)\n", u)
+			} else {
+				allowsCrawling[i] = true
+				fmt.Printf("  %-40s ALLOW\n", u)
+			}
+		}
 	}
 
 	// Compute PageRank
 	fmt.Println()
 	pr := pageRankIterative(g, 0.15, 1e-10, 200)
 
-	fmt.Println("\nPageRank scores:")
-	for i, url := range urls {
-		fmt.Printf("  %-20s %.6f\n", url, pr[i])
+	fmt.Println("\nPrecomputed PageRank scores:")
+	type prEntry struct {
+		url   string
+		score float64
+	}
+	var prList []prEntry
+	for i, u := range urls {
+		prList = append(prList, prEntry{u, pr[i]})
+	}
+	sort.Slice(prList, func(i, j int) bool { return prList[i].score > prList[j].score })
+	for _, e := range prList {
+		fmt.Printf("  %-40s %.6f\n", e.url, e.score)
 	}
 
-	// Run crawl prioritization
-	nodeNames := make(map[int]string)
-	for i, url := range urls {
-		nodeNames[i] = url
-	}
-	crawlPriority(g, pr, allowsCrawling, 5, 0.7, nodeNames)
+	// Run crawl prioritization with ADDT heuristic
+	w := crawlWeights{authority: 0.40, demand: 0.20, diversity: 0.20, trust: 0.20}
+	crawlPriority(g, pr, allowsCrawling, 5, w, nodeNames)
 }
 
 func main() {
 	filePath := flag.String("file", "../web-Google_10k.txt", "path to graph file")
 	p := flag.Float64("p", 0.15, "teleport probability")
 	noClosedForm := flag.Bool("no-closed", false, "skip closed-form (for large graphs)")
-	crawlDemo := flag.Bool("crawl", false, "run AI crawl prioritization demo")
+	crawlDemoFlag := flag.Bool("crawl", false, "run AI crawl prioritization demo")
+	crawlJSON := flag.String("crawl-json", "", "path to JSON web graph for crawl prioritization")
 	crawlK := flag.Int("crawl-k", 10, "top-k pages to return for crawl prioritization")
-	crawlAlpha := flag.Float64("crawl-alpha", 0.7, "weight for PageRank vs out-degree (0-1)")
+	fetchRobots := flag.Bool("fetch-robots", false, "fetch real robots.txt (requires network)")
 	flag.Parse()
 
-	if *crawlDemo {
-		demoCrawl()
+	if *crawlDemoFlag {
+		demoCrawl(*fetchRobots)
+		return
+	}
+
+	if *crawlJSON != "" {
+		g, nodeNames, err := parseJSONGraph(*crawlJSON)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing JSON graph: %v\n", err)
+			os.Exit(1)
+		}
+
+		pr := pageRankIterative(g, *p, 1e-10, 200)
+
+		fmt.Println("\nPageRank scores:")
+		type prEntry struct {
+			name  string
+			score float64
+		}
+		var prList []prEntry
+		for id, name := range nodeNames {
+			prList = append(prList, prEntry{name, pr[id]})
+		}
+		sort.Slice(prList, func(i, j int) bool { return prList[i].score > prList[j].score })
+		for _, e := range prList {
+			fmt.Printf("  %-40s %.6f\n", e.name, e.score)
+		}
+
+		// Check robots.txt
+		allowsCrawling := make(map[int]bool, g.N)
+		if *fetchRobots {
+			fmt.Println("\nChecking robots.txt...")
+			for id, name := range nodeNames {
+				allowsCrawling[id] = checkRobotsTxt(name, "GPTBot")
+			}
+		} else {
+			for i := 0; i < g.N; i++ {
+				allowsCrawling[g.ReverseID[i]] = true
+			}
+		}
+
+		w := crawlWeights{authority: 0.40, demand: 0.20, diversity: 0.20, trust: 0.20}
+		crawlPriority(g, pr, allowsCrawling, *crawlK, w, nodeNames)
 		return
 	}
 
@@ -419,12 +737,12 @@ func main() {
 
 	if *noClosedForm {
 		// Run crawl prioritization on the real graph
-		// Assume all pages allow crawling (no robots.txt data available)
 		allowsAll := make(map[int]bool, g.N)
 		for i := 0; i < g.N; i++ {
 			allowsAll[g.ReverseID[i]] = true
 		}
-		crawlPriority(g, rIter, allowsAll, *crawlK, *crawlAlpha, nil)
+		w := crawlWeights{authority: 0.50, demand: 0.25, diversity: 0.25, trust: 0.0}
+		crawlPriority(g, rIter, allowsAll, *crawlK, w, nil)
 		return
 	}
 

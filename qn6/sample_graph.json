@@ -1,0 +1,12 @@
+{
+  "https://en.wikipedia.org":      ["https://www.example.com", "https://www.nist.gov", "https://archive.org"],
+  "https://www.example.com":       ["https://en.wikipedia.org", "https://news.ycombinator.com", "https://blog.github.io"],
+  "https://www.nist.gov":          ["https://en.wikipedia.org", "https://arxiv.org", "https://archive.org"],
+  "https://news.ycombinator.com":  ["https://www.example.com", "https://en.wikipedia.org", "https://blog.github.io"],
+  "https://blog.github.io":        ["https://www.example.com", "https://news.ycombinator.com"],
+  "https://www.amazon.com":        ["https://www.example.com", "https://blog.github.io"],
+  "https://www.facebook.com":      ["https://www.example.com", "https://news.ycombinator.com", "https://blog.github.io", "https://www.amazon.com"],
+  "https://arxiv.org":             ["https://en.wikipedia.org", "https://www.nist.gov"],
+  "https://archive.org":           ["https://en.wikipedia.org", "https://arxiv.org"],
+  "https://mit.edu":               ["https://en.wikipedia.org", "https://arxiv.org", "https://www.nist.gov", "https://archive.org"]
+}

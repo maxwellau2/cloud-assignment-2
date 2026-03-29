@@ -2,7 +2,7 @@
 \usepackage{amsmath, amssymb, amsthm}
 
 \title{Closed-Form Derivation of PageRank}
-\author{}
+\author{Au Ze Hong, Maxwell \\ U2321963E}
 \date{}
 
 \begin{document}
@@ -194,5 +194,85 @@ On the full Google web graph ($N = 875{,}713$ nodes, $|E| = 5{,}105{,}039$ edges
 The closed-form method cannot be applied to this dataset: constructing the dense $875{,}713 \times 875{,}713$ matrix requires $875{,}713^2 \times 8$ bytes $\approx 5.7$ TB of memory, which exceeds available system RAM by orders of magnitude. The program terminates with an out-of-memory error before the solve can begin.
 
 This demonstrates the fundamental advantage of the iterative power method: it operates on the \textbf{sparse} graph structure directly, requiring memory proportional to the number of edges rather than the square of the number of nodes. For real-world web graphs with millions or billions of pages, the closed-form solution is entirely infeasible, while the iterative method remains practical.
+
+\section{AI Web Crawl Prioritization}
+
+We extend the PageRank implementation to design a crawling strategy for an AI research organization collecting training data, similar to OpenAI's GPTBot. The program takes a directed web graph (represented as a JSON dictionary of URLs and their outlinks) along with precomputed PageRank scores, and returns the top-$k$ URLs to crawl.
+
+\subsection{Why High-PageRank Pages Yield Better Training Data}
+
+PageRank measures recursive authority: a page is important if many important pages link to it. For generative AI training, prioritizing high-PageRank pages is beneficial because:
+
+\begin{enumerate}
+    \item \textbf{Factual accuracy}: Widely-cited pages undergo more scrutiny and correction over time, making their content more reliable. Training on authoritative text reduces hallucination risk.
+    \item \textbf{Topical breadth}: High-PageRank pages tend to serve as reference material for many other sites, covering topics broadly and clearly.
+    \item \textbf{Content structure}: Authoritative pages are often well-structured with headings, paragraphs, and citations, making them easier to parse into clean training data.
+    \item \textbf{Diversity of knowledge}: Since PageRank propagates through the link graph, highly-ranked pages span diverse domains (encyclopedias, government databases, academic repositories), providing a natural curriculum for training.
+\end{enumerate}
+
+\subsection{Heuristic: Authority-Demand-Diversity-Trust (ADDT) Score}
+
+We propose a multi-factor heuristic that combines four signals to identify high-quality pages that permit crawling:
+
+\begin{equation}
+    \text{score}(v) = w_1 \cdot \widehat{\text{PR}}(v) + w_2 \cdot \widehat{\text{InDeg}}(v) + w_3 \cdot \widehat{\text{OutDeg}}(v) + w_4 \cdot \text{Trust}(v)
+\end{equation}
+
+where $\widehat{\cdot}$ denotes min-max normalization to $[0, 1]$ across all crawlable pages, and:
+
+\begin{itemize}
+    \item \textbf{Authority} ($w_1 = 0.40$): Normalized PageRank score, capturing recursive trust from the web graph.
+    \item \textbf{Demand} ($w_2 = 0.20$): Normalized in-degree, measuring how many pages link to this page as an independent validation signal distinct from PageRank's recursive propagation.
+    \item \textbf{Diversity} ($w_3 = 0.20$): Normalized out-degree, favoring pages with broad outlinks that serve as good entry points for expanding the crawl frontier.
+    \item \textbf{Domain Trust} ($w_4 = 0.20$): A TLD-based prior reflecting content quality expectations:
+    \begin{itemize}
+        \item \texttt{.edu}, \texttt{.gov} $\to 1.0$ (academic/government, highest factual standards)
+        \item \texttt{.org} $\to 0.7$ (non-profit, generally reliable)
+        \item \texttt{.io} $\to 0.4$ (tech-focused)
+        \item Other $\to 0.3$ (commercial/unknown)
+    \end{itemize}
+\end{itemize}
+
+Before scoring, pages that disallow crawling are filtered out by checking \texttt{robots.txt} for the target bot name (e.g., \texttt{GPTBot}). The program parses \texttt{User-agent} and \texttt{Disallow} directives, respecting both bot-specific and wildcard rules. Pages whose \texttt{robots.txt} is unreachable are assumed to permit crawling (fail-open).
+
+\subsection{Input Format}
+
+The program accepts a JSON dictionary where keys are URLs and values are lists of outlinks:
+
+\begin{verbatim}
+{
+  "https://en.wikipedia.org": ["https://www.nist.gov", "https://archive.org"],
+  "https://www.nist.gov":     ["https://en.wikipedia.org", "https://arxiv.org"],
+  ...
+}
+\end{verbatim}
+
+This graph is parsed into the same internal representation used for PageRank computation. URLs appearing only as outlinks (not as keys) are added as nodes with zero out-degree.
+
+\subsection{Demo Results}
+
+We evaluate on a 10-node graph with realistic URLs spanning \texttt{.org}, \texttt{.edu}, \texttt{.gov}, \texttt{.com}, and \texttt{.io} domains. Amazon and Facebook are simulated as blocking GPTBot via \texttt{robots.txt}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|l|c|c|c|c|c|}
+\hline
+\textbf{Rank} & \textbf{URL} & \textbf{PageRank} & \textbf{InDeg} & \textbf{OutDeg} & \textbf{Trust} & \textbf{Score} \\
+\hline
+1 & en.wikipedia.org  & 0.2260 & 6 & 3 & .org & 0.890 \\
+2 & www.nist.gov      & 0.1265 & 3 & 3 & .gov & 0.674 \\
+3 & www.example.com   & 0.1647 & 5 & 3 & .com & 0.668 \\
+4 & archive.org       & 0.1181 & 3 & 2 & .org & 0.549 \\
+5 & arxiv.org         & 0.1042 & 3 & 2 & .org & 0.524 \\
+\hline
+\end{tabular}
+\caption{Top 5 crawl targets by ADDT score (weights: $w_1\!=\!0.40, w_2\!=\!0.20, w_3\!=\!0.20, w_4\!=\!0.20$)}
+\end{table}
+
+Wikipedia ranks first due to the highest PageRank (most pages link to it) combined with broad outlinks and a trusted \texttt{.org} domain. NIST outranks the higher-PageRank \texttt{example.com} because its \texttt{.gov} domain trust (1.0 vs.\ 0.3) compensates for the PageRank difference, demonstrating how the multi-factor heuristic surfaces high-quality government sources that pure PageRank ranking alone might deprioritize. Amazon and Facebook are excluded entirely due to their \texttt{robots.txt} restrictions.
+
+\subsection{Application to the Google Web Graph}
+
+When applied to the 10,000-node Google dataset (where nodes are integer IDs without domain information), the domain trust factor is automatically disabled and its weight redistributed to authority. The top crawl target is node 285814, which balances high PageRank (rank 2 overall) with the highest in-degree (207) and out-degree (210) in the graph, making it an ideal crawl frontier entry point. Node 486980, despite having the highest PageRank, ranks second for crawling because its low out-degree (6) limits its value as a source for discovering additional pages.
 
 \end{document}

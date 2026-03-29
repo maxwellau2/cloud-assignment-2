@@ -8,7 +8,7 @@ qn6/pagerank
 web-Google.txt
 
 # PDF
-*.pdf
+Tutorial3(1).pdf
 
 # OS files
 .DS_Store
@@ -20,3 +20,5 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+report.aux
+reoprt.log
