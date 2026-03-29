@@ -1,0 +1,22 @@
+# Binaries
+*.exe
+*.out
+*.bin
+qn6/pagerank
+
+# Large data files
+web-Google.txt
+
+# PDF
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

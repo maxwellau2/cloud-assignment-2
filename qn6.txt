@@ -1,0 +1,42 @@
+Consider a web graph with Google matrix M where a random web surfer jumps
+off (i.e., !teleport") to another website (with all webpages equally likely) from
+the current website with probability p. Derive the PageRank in analytical form
+(i.e., in closed form) in terms of M and p. Describe how the PageRank may
+change with respect to p. Explain using illustrative examples.
+Implement the Pagerank algorithm using your favorite programming language
+(e.g., Python, C++, see link below) and evaluated on large datasets, e.g., web-
+Google_10k.txt or web-Google.txt provided by Google in 2002 available at:
+Cloud Computing
+- 3 -
+https://hunglvosu.github.io/posts/2020/07/PA3/. You can use any graph
+processing libraries (see references) or develop your own in your program.
+Compare the numerical output of your algorithm with the above closed form.
+More Challenging: Next, you will explore PageRank's modern relevance by
+choosing either: (i) AI web crawling for training or otherwise (ii) GraphRAG
+for information retrieval. You can choose to use or create any software tools.
+(i) OpenAI uses specialized web crawlers like GPTBot
+(https://developers.openai.com/api/docs/bots/) to collect training data for
+foundation models with website owners able to control access via Web
+Robot configuration (https://www.robotstxt.org/). Imagine you are
+designing a crawling strategy for a new AI research organization and
+must decide how to prioritize which newly-discovered web pages to
+crawl first using a GPTBot-like crawler. Write a program/software that
+takes a small directed web graph (represented as a dictionary of URLs
+and their outlinks) and precomputed PageRank scores, then returns the
+top k URLs to crawl based on authority, explaining why high-PageRank
+pages might yield higher-quality training data for generative AI models.
+Propose one heuristic to find high-quality pages that permit crawling.
+(ii) Explore the open-source repository fast-graphrag by circlemind-ai on
+(https://github.com/circlemind-ai/fast-graphrag), which is a GraphRAG
+framework for interpretable agent-driven retrieval workflows. Its
+primary goal is to support for dynamic, incrementally updatable
+knowledge graphs by PageRank to enhance accuracy and dependability.
+Use GraphRAG to answer a multi-hop query, for instance: "What
+discoveries by Marie Curie led to later advances in medical imaging?"
+Injecting Pagerank scores into the retrieval step helps by starting from
+seed entities ("Marie Curie," "medical imaging") and propagating
+importance through the graph's connections (e.g., "Marie Curie" ->
+"discovered radium" -> "used in radiotherapy" -> "advances in medical
+imaging"), effectively ranking nodes based on their relevance to the
+specific query context. Write a program/software to take a knowledge
+graph and a set of query entities to return the top k most relevant nodes.

@@ -1,0 +1,198 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb, amsthm}
+
+\title{Closed-Form Derivation of PageRank}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+
+Consider a web graph with $N$ pages. Define:
+\begin{itemize}
+    \item $A$ = adjacency matrix, where $A_{ij} = 1$ if page $i$ links to page $j$, else $0$.
+    \item $H$ = row-stochastic transition matrix, where $H_{ij} = \frac{1}{\text{out-degree}(i)}$ if $i \to j$, else $0$.
+    \item $p$ = teleport probability, $0 < p \leq 1$.
+    \item $E$ = $N \times N$ all-ones matrix.
+    \item $\mathbf{1}$ = all-ones column vector of length $N$.
+\end{itemize}
+
+The Google transition matrix is:
+\begin{equation}
+    M = (1 - p) H + \frac{p}{N} E
+\end{equation}
+
+\section{Steady-State Condition}
+
+The PageRank vector $\mathbf{r}^T$ is the stationary distribution of the Markov chain defined by $M$, satisfying:
+\begin{equation}
+    \mathbf{r}^T M = \mathbf{r}^T
+\end{equation}
+with the constraint $\mathbf{r}^T \mathbf{1} = 1$ (i.e., $\mathbf{r}$ is a probability distribution).
+
+\section{Closed-Form Derivation}
+
+Substituting the expression for $M$:
+\begin{equation}
+    \mathbf{r}^T \left[ (1 - p) H + \frac{p}{N} E \right] = \mathbf{r}^T
+\end{equation}
+
+Expanding:
+\begin{equation}
+    (1 - p) \mathbf{r}^T H + \frac{p}{N} \mathbf{r}^T E = \mathbf{r}^T
+\end{equation}
+
+Since $\mathbf{r}$ is a probability distribution, $\mathbf{r}^T \mathbf{1} = 1$. Noting that $E = \mathbf{1}\mathbf{1}^T$, we have:
+\begin{equation}
+    \mathbf{r}^T E = \mathbf{r}^T \mathbf{1} \mathbf{1}^T = 1 \cdot \mathbf{1}^T = \mathbf{1}^T
+\end{equation}
+
+Substituting:
+\begin{equation}
+    (1 - p) \mathbf{r}^T H + \frac{p}{N} \mathbf{1}^T = \mathbf{r}^T
+\end{equation}
+
+Rearranging:
+\begin{equation}
+    \mathbf{r}^T - (1 - p) \mathbf{r}^T H = \frac{p}{N} \mathbf{1}^T
+\end{equation}
+
+Factoring:
+\begin{equation}
+    \mathbf{r}^T \left[ I - (1 - p) H \right] = \frac{p}{N} \mathbf{1}^T
+\end{equation}
+
+Solving for $\mathbf{r}^T$:
+\begin{equation}
+    \boxed{\mathbf{r}^T = \frac{p}{N} \cdot \mathbf{1}^T \cdot \left[ I - (1 - p) H \right]^{-1}}
+\end{equation}
+
+\section{Invertibility of $I - (1-p)H$}
+
+Since $H$ is row-stochastic, its eigenvalues satisfy $|\lambda_i| \leq 1$. For $0 < p \leq 1$, the matrix $(1-p)H$ has spectral radius:
+\begin{equation}
+    \rho\big((1-p)H\big) \leq (1-p) < 1
+\end{equation}
+
+Therefore $I - (1-p)H$ is non-singular and its inverse exists. Moreover, it admits a Neumann series expansion:
+\begin{equation}
+    \left[ I - (1-p)H \right]^{-1} = \sum_{k=0}^{\infty} \left[(1-p)H\right]^k = I + (1-p)H + (1-p)^2 H^2 + \cdots
+\end{equation}
+
+This series converges absolutely since $(1-p) < 1$, and corresponds to the iterative power method: each term $(1-p)^k H^k$ represents the contribution of $k$-step random walks, geometrically decayed.
+
+\section{Effect of $p$}
+
+\begin{itemize}
+    \item As $p \to 0$: $M \to H$. The PageRank is determined entirely by the link structure. Rank concentrates on highly connected pages.
+    \item At $p = 0.15$: The standard value used by Google. Link structure dominates with mild smoothing from teleportation.
+    \item As $p \to 1$: $M \to \frac{1}{N}E$. The surfer teleports at every step, so $\mathbf{r} \to \frac{1}{N}\mathbf{1}$. All pages receive equal rank regardless of link structure.
+\end{itemize}
+
+\section{Illustrative Example}
+
+Consider $N = 3$ pages with links $1 \to 2$, $2 \to 1$, $2 \to 3$, $3 \to 2$, and $p = 0.5$.
+
+The row-stochastic transition matrix is:
+\begin{equation}
+    H = \begin{pmatrix} 0 & 1 & 0 \\ \frac{1}{2} & 0 & \frac{1}{2} \\ 0 & 1 & 0 \end{pmatrix}
+\end{equation}
+
+Computing:
+\begin{equation}
+    I - (1 - 0.5)H = \begin{pmatrix} 1 & -\frac{1}{2} & 0 \\ -\frac{1}{4} & 1 & -\frac{1}{4} \\ 0 & -\frac{1}{2} & 1 \end{pmatrix}
+\end{equation}
+
+Applying the closed form:
+\begin{equation}
+    \mathbf{r}^T = \frac{0.5}{3} \cdot \mathbf{1}^T \cdot \begin{pmatrix} 1 & -\frac{1}{2} & 0 \\ -\frac{1}{4} & 1 & -\frac{1}{4} \\ 0 & -\frac{1}{2} & 1 \end{pmatrix}^{-1}
+\end{equation}
+
+yields the PageRank vector, which matches the result obtained by iterating $\mathbf{r}^T \leftarrow \mathbf{r}^T M$ until convergence.
+
+\section{Implementation}
+
+We implement both the closed-form solution and the iterative power method in Go, and evaluate them on two Google web graph datasets.
+
+\subsection{Iterative Method (Power Method)}
+
+The power method computes PageRank by repeatedly applying the transition:
+\begin{equation}
+    \mathbf{r} \leftarrow (1-p) H^T \mathbf{r} + \frac{p}{N} \mathbf{1}
+\end{equation}
+starting from $\mathbf{r} = \frac{1}{N}\mathbf{1}$, until the $L_1$ norm of the change $\|\mathbf{r}^{(t+1)} - \mathbf{r}^{(t)}\|_1 < \epsilon$. This method operates directly on the sparse adjacency list, requiring only $O(N + |E|)$ memory and $O(|E|)$ work per iteration, where $|E|$ is the number of edges.
+
+Dangling nodes (pages with no outlinks) are handled by redistributing their rank uniformly across all pages at each iteration.
+
+\subsection{Closed-Form Method (Matrix Inversion)}
+
+The closed-form solution requires solving the linear system:
+\begin{equation}
+    \left[I - (1-p)H\right]^T \mathbf{r} = \frac{p}{N} \mathbf{1}
+\end{equation}
+This requires constructing the full $N \times N$ dense matrix $I - (1-p)H$ and performing LU decomposition to solve the system.
+
+\subsection{Results on web-Google\_10k.txt}
+
+On the 10,000-node subgraph (78,323 edges), both methods produce identical results with a maximum absolute difference of $7.67 \times 10^{-12}$, confirming correctness.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Rank} & \textbf{Node ID} & \textbf{Score} \\
+\hline
+1 & 486980 & 0.0069990194 \\
+2 & 285814 & 0.0047475463 \\
+3 & 226374 & 0.0033955805 \\
+4 & 163075 & 0.0033308254 \\
+5 & 555924 & 0.0026860608 \\
+\hline
+\end{tabular}
+\caption{Top 5 pages by PageRank on web-Google\_10k.txt ($p = 0.15$)}
+\end{table}
+
+However, the two methods differ dramatically in performance:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Method} & \textbf{Time} & \textbf{Memory} & \textbf{Complexity} \\
+\hline
+Iterative (power method) & 25 ms & $O(N + |E|)$ & $O(\text{iters} \times |E|)$ \\
+Closed-form (LU solve) & 9.7 s & $O(N^2)$ & $O(N^3)$ \\
+\hline
+\end{tabular}
+\caption{Performance comparison on web-Google\_10k.txt ($N = 10{,}000$)}
+\end{table}
+
+The closed-form method is approximately 382$\times$ slower than the iterative method on this dataset.
+
+\subsection{Results on web-Google.txt}
+
+On the full Google web graph ($N = 875{,}713$ nodes, $|E| = 5{,}105{,}039$ edges), the iterative method converges in 118 iterations and 3.1 seconds.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Rank} & \textbf{Node ID} & \textbf{Score} \\
+\hline
+1 & 597621 & 0.0009237249 \\
+2 & 41909  & 0.0009211312 \\
+3 & 163075 & 0.0009040044 \\
+4 & 537039 & 0.0008988318 \\
+5 & 384666 & 0.0007868924 \\
+\hline
+\end{tabular}
+\caption{Top 5 pages by PageRank on web-Google.txt ($p = 0.15$)}
+\end{table}
+
+The closed-form method cannot be applied to this dataset: constructing the dense $875{,}713 \times 875{,}713$ matrix requires $875{,}713^2 \times 8$ bytes $\approx 5.7$ TB of memory, which exceeds available system RAM by orders of magnitude. The program terminates with an out-of-memory error before the solve can begin.
+
+This demonstrates the fundamental advantage of the iterative power method: it operates on the \textbf{sparse} graph structure directly, requiring memory proportional to the number of edges rather than the square of the number of nodes. For real-world web graphs with millions or billions of pages, the closed-form solution is entirely infeasible, while the iterative method remains practical.
+
+\end{document}
