@@ -20,5 +20,13 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+
+# LaTeX build artifacts
 report.aux
-reoprt.log
+report.log
+report.out
+
+# Generated CSV data (reproducible via Makefile)
+qn6/convergence.csv
+qn6/vary_p.csv
+qn6/addt_breakdown.csv

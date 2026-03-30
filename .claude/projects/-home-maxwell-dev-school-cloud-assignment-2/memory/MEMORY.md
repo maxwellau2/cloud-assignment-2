@@ -1,0 +1,1 @@
+- [Use uv for Python](feedback_uv.md) — User uses uv, not pip/pip3, for Python package management

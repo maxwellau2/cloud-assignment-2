@@ -1,7 +1,23 @@
 \documentclass{article}
 \usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{listings}
+\lstset{
+  language=Go,
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny,
+  tabsize=4,
+  showstringspaces=false,
+  extendedchars=true,
+  literate={—}{{---}}1
+}
 
-\title{Closed-Form Derivation of PageRank}
+\title{PageRank: Closed-Form Derivation, Implementation, and\\Application to AI Web Crawl Prioritization}
 \author{Au Ze Hong, Maxwell \\ U2321963E}
 \date{}
 
@@ -91,6 +107,33 @@ This series converges absolutely since $(1-p) < 1$, and corresponds to the itera
     \item As $p \to 1$: $M \to \frac{1}{N}E$. The surfer teleports at every step, so $\mathbf{r} \to \frac{1}{N}\mathbf{1}$. All pages receive equal rank regardless of link structure.
 \end{itemize}
 
+We verify this experimentally on the 10,000-node Google web graph. Table~\ref{tab:vary-p} shows the top-ranked node's PageRank score at varying $p$ values. At $p = 0.01$, the top node (486980) holds rank 263$\times$ the uniform value $1/N = 10^{-4}$. As $p$ increases, this concentration diminishes: at $p = 0.85$, the top score is only 12.6$\times$ uniform, and the identity of the top node changes (from 486980 to 151110), reflecting the erosion of link-based authority. Figure~\ref{fig:pagerank-vs-p} visualizes this convergence toward uniformity for the top-5 nodes.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{$p$} & \textbf{Top Node} & \textbf{Score} & \textbf{Ratio to $1/N$} \\
+\hline
+0.01 & 486980 & 0.02629 & 262.9$\times$ \\
+0.05 & 486980 & 0.01225 & 122.5$\times$ \\
+0.15 & 486980 & 0.00700 & 70.0$\times$ \\
+0.50 & 486980 & 0.00313 & 31.3$\times$ \\
+0.85 & 151110 & 0.00126 & 12.6$\times$ \\
+0.95 & 151110 & 0.00053 & 5.3$\times$ \\
+\hline
+\end{tabular}
+\caption{Top-ranked node's PageRank score vs.\ teleport probability $p$ on web-Google\_10k.txt ($N = 10{,}000$, uniform $= 10^{-4}$)}
+\label{tab:vary-p}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{plots/pagerank_vs_p.pdf}
+\caption{PageRank scores of top-5 nodes vs.\ teleport probability $p$ on web-Google\_10k.txt. As $p \to 1$, all scores converge toward the uniform baseline $1/N$.}
+\label{fig:pagerank-vs-p}
+\end{figure}
+
 \section{Illustrative Example}
 
 Consider $N = 3$ pages with links $1 \to 2$, $2 \to 1$, $2 \to 3$, $3 \to 2$, and $p = 0.5$.
@@ -105,16 +148,31 @@ Computing:
     I - (1 - 0.5)H = \begin{pmatrix} 1 & -\frac{1}{2} & 0 \\ -\frac{1}{4} & 1 & -\frac{1}{4} \\ 0 & -\frac{1}{2} & 1 \end{pmatrix}
 \end{equation}
 
-Applying the closed form:
+Applying the closed form, we first compute the inverse. The determinant is:
 \begin{equation}
-    \mathbf{r}^T = \frac{0.5}{3} \cdot \mathbf{1}^T \cdot \begin{pmatrix} 1 & -\frac{1}{2} & 0 \\ -\frac{1}{4} & 1 & -\frac{1}{4} \\ 0 & -\frac{1}{2} & 1 \end{pmatrix}^{-1}
+    \det\left(I - \tfrac{1}{2}H\right) = 1\!\cdot\!\left(1 - \tfrac{1}{8}\right) - \left(-\tfrac{1}{2}\right)\!\cdot\!\left(-\tfrac{1}{4}\right) = \tfrac{7}{8} - \tfrac{1}{8} = \tfrac{3}{4}
 \end{equation}
 
-yields the PageRank vector, which matches the result obtained by iterating $\mathbf{r}^T \leftarrow \mathbf{r}^T M$ until convergence.
+Computing the adjugate and dividing by the determinant:
+\begin{equation}
+    \left[I - \tfrac{1}{2}H\right]^{-1} = \frac{4}{3}\begin{pmatrix} \frac{7}{8} & \frac{1}{2} & \frac{1}{8} \\[4pt] \frac{1}{4} & 1 & \frac{1}{4} \\[4pt] \frac{1}{8} & \frac{1}{2} & \frac{7}{8} \end{pmatrix} = \begin{pmatrix} \frac{7}{6} & \frac{2}{3} & \frac{1}{6} \\[4pt] \frac{1}{3} & \frac{4}{3} & \frac{1}{3} \\[4pt] \frac{1}{6} & \frac{2}{3} & \frac{7}{6} \end{pmatrix}
+\end{equation}
+
+Then:
+\begin{equation}
+    \mathbf{1}^T \cdot \left[I - \tfrac{1}{2}H\right]^{-1} = \left(\tfrac{7}{6} + \tfrac{1}{3} + \tfrac{1}{6},\; \tfrac{2}{3} + \tfrac{4}{3} + \tfrac{2}{3},\; \tfrac{1}{6} + \tfrac{1}{3} + \tfrac{7}{6}\right) = \left(\tfrac{5}{3},\; \tfrac{8}{3},\; \tfrac{5}{3}\right)
+\end{equation}
+
+Finally:
+\begin{equation}
+    \mathbf{r}^T = \frac{0.5}{3} \cdot \left(\tfrac{5}{3},\; \tfrac{8}{3},\; \tfrac{5}{3}\right) = \left(\tfrac{5}{18},\; \tfrac{4}{9},\; \tfrac{5}{18}\right) \approx (0.2778,\; 0.4444,\; 0.2778)
+\end{equation}
+
+We verify $\sum_i r_i = \frac{5}{18} + \frac{4}{9} + \frac{5}{18} = 1$. Page 2 has the highest rank ($r_2 = 4/9$) because it receives links from both pages 1 and 3, while pages 1 and 3 each receive a link only from page 2 and thus share equal rank. This matches the result obtained by iterating $\mathbf{r}^T \leftarrow \mathbf{r}^T M$ until convergence.
 
 \section{Implementation}
 
-We implement both the closed-form solution and the iterative power method in Go, and evaluate them on two Google web graph datasets.
+We implement both the closed-form solution and the iterative power method in Go (using the \texttt{gonum} library for dense linear algebra), and evaluate them on two Google web graph datasets. All experiments were run on a single machine; the source code is available in the repository listed in Section~\ref{sec:code}.
 
 \subsection{Iterative Method (Power Method)}
 
@@ -124,7 +182,14 @@ The power method computes PageRank by repeatedly applying the transition:
 \end{equation}
 starting from $\mathbf{r} = \frac{1}{N}\mathbf{1}$, until the $L_1$ norm of the change $\|\mathbf{r}^{(t+1)} - \mathbf{r}^{(t)}\|_1 < \epsilon$. This method operates directly on the sparse adjacency list, requiring only $O(N + |E|)$ memory and $O(|E|)$ work per iteration, where $|E|$ is the number of edges.
 
-Dangling nodes (pages with no outlinks) are handled by redistributing their rank uniformly across all pages at each iteration.
+Dangling nodes (pages with no outlinks) are handled by redistributing their rank uniformly across all pages at each iteration. Figure~\ref{fig:convergence} shows the convergence behavior on the 10,000-node dataset: the $L_1$ difference decreases exponentially, reaching $\epsilon = 10^{-10}$ in 114 iterations.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{plots/convergence.pdf}
+\caption{Convergence of the power method on web-Google\_10k.txt ($p = 0.15$). The $L_1$ norm of the rank difference decreases exponentially, converging in 114 iterations.}
+\label{fig:convergence}
+\end{figure}
 
 \subsection{Closed-Form Method (Matrix Inversion)}
 
@@ -269,10 +334,22 @@ We evaluate on a 10-node graph with realistic URLs spanning \texttt{.org}, \text
 \caption{Top 5 crawl targets by ADDT score (weights: $w_1\!=\!0.40, w_2\!=\!0.20, w_3\!=\!0.20, w_4\!=\!0.20$)}
 \end{table}
 
-Wikipedia ranks first due to the highest PageRank (most pages link to it) combined with broad outlinks and a trusted \texttt{.org} domain. NIST outranks the higher-PageRank \texttt{example.com} because its \texttt{.gov} domain trust (1.0 vs.\ 0.3) compensates for the PageRank difference, demonstrating how the multi-factor heuristic surfaces high-quality government sources that pure PageRank ranking alone might deprioritize. Amazon and Facebook are excluded entirely due to their \texttt{robots.txt} restrictions.
+Wikipedia ranks first due to the highest PageRank (most pages link to it) combined with broad outlinks and a trusted \texttt{.org} domain. NIST outranks the higher-PageRank \texttt{example.com} because its \texttt{.gov} domain trust (1.0 vs.\ 0.3) compensates for the PageRank difference, demonstrating how the multi-factor heuristic surfaces high-quality government sources that pure PageRank ranking alone might deprioritize. Amazon and Facebook are excluded entirely due to their \texttt{robots.txt} restrictions. Figure~\ref{fig:addt-breakdown} visualizes the score breakdown.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{plots/addt_breakdown.pdf}
+\caption{ADDT score breakdown for top-5 crawl targets. Each bar segment shows the weighted contribution of authority (PageRank), demand (in-degree), diversity (out-degree), and domain trust.}
+\label{fig:addt-breakdown}
+\end{figure}
 
 \subsection{Application to the Google Web Graph}
 
 When applied to the 10,000-node Google dataset (where nodes are integer IDs without domain information), the domain trust factor is automatically disabled and its weight redistributed to authority. The top crawl target is node 285814, which balances high PageRank (rank 2 overall) with the highest in-degree (207) and out-degree (210) in the graph, making it an ideal crawl frontier entry point. Node 486980, despite having the highest PageRank, ranks second for crawling because its low out-degree (6) limits its value as a source for discovering additional pages.
+
+\section{Code}
+\label{sec:code}
+
+The full source code is available at: \url{https://github.com/maxwellau2/cloud-assignment-2}
 
 \end{document}
