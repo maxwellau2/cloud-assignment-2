@@ -161,7 +161,7 @@ func parseJSONGraph(filename string) (*Graph, map[int]string, error) {
 	return g, nodeNames, nil
 }
 
-func pageRankIterative(g *Graph, p float64, epsilon float64, maxIter int) []float64 {
+func pageRankIterativeWithLog(g *Graph, p float64, epsilon float64, maxIter int, convergenceLog *os.File) []float64 {
 	N := g.N
 	r := make([]float64, N)
 	for i := range r {
@@ -198,6 +198,10 @@ func pageRankIterative(g *Graph, p float64, epsilon float64, maxIter int) []floa
 			diff += math.Abs(rNew[i] - r[i])
 		}
 
+		if convergenceLog != nil {
+			fmt.Fprintf(convergenceLog, "%d,%.15e\n", iter, diff)
+		}
+
 		r = rNew
 		if diff < epsilon {
 			fmt.Printf("Iterative: converged at iteration %d (diff=%.2e)\n", iter, diff)
@@ -207,6 +211,10 @@ func pageRankIterative(g *Graph, p float64, epsilon float64, maxIter int) []floa
 
 	fmt.Printf("Iterative: did not converge after %d iterations\n", maxIter)
 	return r
+}
+
+func pageRankIterative(g *Graph, p float64, epsilon float64, maxIter int) []float64 {
+	return pageRankIterativeWithLog(g, p, epsilon, maxIter, nil)
 }
 
 func pageRankClosedForm(g *Graph, p float64) []float64 {
@@ -286,6 +294,35 @@ func printTopK(r []float64, reverseID []int, k int, label string) {
 	for i := 0; i < k && i < len(ranks); i++ {
 		fmt.Printf("%-6d %-12d %.10f\n", i+1, reverseID[ranks[i].idx], ranks[i].score)
 	}
+}
+
+// varyP runs PageRank at multiple p values and outputs CSV data.
+func varyP(g *Graph, outFile string) {
+	pValues := []float64{0.01, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.70, 0.85, 0.95}
+
+	f, err := os.Create(outFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", outFile, err)
+		return
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "p,node_id,rank,score")
+
+	for _, p := range pValues {
+		r := pageRankIterative(g, p, 1e-10, 200)
+		ranks := make([]ranked, len(r))
+		for i, v := range r {
+			ranks[i] = ranked{i, v}
+		}
+		sort.Slice(ranks, func(i, j int) bool {
+			return ranks[i].score > ranks[j].score
+		})
+		for rank := 0; rank < 5 && rank < len(ranks); rank++ {
+			fmt.Fprintf(f, "%.2f,%d,%d,%.15e\n", p, g.ReverseID[ranks[rank].idx], rank+1, ranks[rank].score)
+		}
+	}
+	fmt.Printf("Wrote vary-p data to %s\n", outFile)
 }
 
 // domainTrust returns a trust score based on TLD.
@@ -385,7 +422,7 @@ type crawlWeights struct {
 //   - Domain trust: TLD-based quality signal (.edu/.gov > .org > .com)
 //
 // Pages that block crawling via robots.txt are excluded before ranking.
-func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k int, w crawlWeights, nodeNames map[int]string) {
+func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k int, w crawlWeights, nodeNames map[int]string, addtCSVFile string) {
 	hasDomainInfo := false
 	for _, name := range nodeNames {
 		if strings.Contains(name, ".") {
@@ -469,6 +506,21 @@ func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k 
 		return candidates[i].finalScore > candidates[j].finalScore
 	})
 
+	// Write ADDT CSV if requested
+	if addtCSVFile != "" {
+		csvF, err := os.Create(addtCSVFile)
+		if err == nil {
+			fmt.Fprintln(csvF, "rank,name,authority,demand,diversity,trust,final_score")
+			for i := 0; i < k && i < len(candidates); i++ {
+				c := candidates[i]
+				fmt.Fprintf(csvF, "%d,%s,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+					i+1, c.name, w.authority*c.normPR, w.demand*c.normID, w.diversity*c.normOD, w.trust*c.trustScore, c.finalScore)
+			}
+			csvF.Close()
+			fmt.Printf("Wrote ADDT breakdown to %s\n", addtCSVFile)
+		}
+	}
+
 	fmt.Printf("\n=== Top %d URLs to Crawl for AI Training Data ===\n", k)
 	fmt.Printf("Weights: authority=%.2f, demand=%.2f, diversity=%.2f, trust=%.2f\n\n",
 		w.authority, w.demand, w.diversity, w.trust)
@@ -511,7 +563,7 @@ func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k 
 	fmt.Println()
 	fmt.Println("PageRank measures recursive authority: a page is important if many")
 	fmt.Println("important pages link to it. For AI training, this matters because:")
-	fmt.Println("  1. Authority correlates with factual accuracy — widely-cited pages")
+	fmt.Println("  1. Authority correlates with factual accuracy -- widely-cited pages")
 	fmt.Println("     undergo more scrutiny and correction over time.")
 	fmt.Println("  2. High-PageRank pages tend to cover topics broadly and clearly,")
 	fmt.Println("     since they serve as reference material for many other sites.")
@@ -536,7 +588,7 @@ func crawlPriority(g *Graph, pagerank []float64, allowsCrawling map[int]bool, k 
 }
 
 // demoCrawl runs the crawl prioritization on a small example graph
-func demoCrawl(fetchRobots bool) {
+func demoCrawl(fetchRobots bool, addtCSVFile string) {
 	fmt.Println("=== AI Web Crawl Prioritization Demo ===")
 	fmt.Println()
 
@@ -663,7 +715,7 @@ func demoCrawl(fetchRobots bool) {
 
 	// Run crawl prioritization with ADDT heuristic
 	w := crawlWeights{authority: 0.40, demand: 0.20, diversity: 0.20, trust: 0.20}
-	crawlPriority(g, pr, allowsCrawling, 5, w, nodeNames)
+	crawlPriority(g, pr, allowsCrawling, 5, w, nodeNames, addtCSVFile)
 }
 
 func main() {
@@ -674,10 +726,13 @@ func main() {
 	crawlJSON := flag.String("crawl-json", "", "path to JSON web graph for crawl prioritization")
 	crawlK := flag.Int("crawl-k", 10, "top-k pages to return for crawl prioritization")
 	fetchRobots := flag.Bool("fetch-robots", false, "fetch real robots.txt (requires network)")
+	convergenceCSV := flag.String("convergence-csv", "", "output convergence data to CSV file")
+	varyPCSV := flag.String("vary-p-csv", "", "output PageRank vs varying p to CSV file")
+	addtCSV := flag.String("addt-csv", "", "output ADDT score breakdown to CSV file")
 	flag.Parse()
 
 	if *crawlDemoFlag {
-		demoCrawl(*fetchRobots)
+		demoCrawl(*fetchRobots, *addtCSV)
 		return
 	}
 
@@ -718,7 +773,7 @@ func main() {
 		}
 
 		w := crawlWeights{authority: 0.40, demand: 0.20, diversity: 0.20, trust: 0.20}
-		crawlPriority(g, pr, allowsCrawling, *crawlK, w, nodeNames)
+		crawlPriority(g, pr, allowsCrawling, *crawlK, w, nodeNames, *addtCSV)
 		return
 	}
 
@@ -728,10 +783,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Generate vary-p data if requested
+	if *varyPCSV != "" {
+		varyP(g, *varyPCSV)
+	}
+
 	// Iterative PageRank
+	var convergenceFile *os.File
+	if *convergenceCSV != "" {
+		var err2 error
+		convergenceFile, err2 = os.Create(*convergenceCSV)
+		if err2 != nil {
+			fmt.Fprintf(os.Stderr, "Error creating convergence CSV: %v\n", err2)
+		} else {
+			fmt.Fprintln(convergenceFile, "iteration,l1_diff")
+		}
+	}
 	start := time.Now()
-	rIter := pageRankIterative(g, *p, 1e-10, 200)
+	rIter := pageRankIterativeWithLog(g, *p, 1e-10, 200, convergenceFile)
 	iterTime := time.Since(start)
+	if convergenceFile != nil {
+		convergenceFile.Close()
+		fmt.Printf("Wrote convergence data to %s\n", *convergenceCSV)
+	}
 	printTopK(rIter, g.ReverseID, 10, "iterative")
 	fmt.Printf("Iterative time: %v\n", iterTime)
 
@@ -742,7 +816,7 @@ func main() {
 			allowsAll[g.ReverseID[i]] = true
 		}
 		w := crawlWeights{authority: 0.50, demand: 0.25, diversity: 0.25, trust: 0.0}
-		crawlPriority(g, rIter, allowsAll, *crawlK, w, nil)
+		crawlPriority(g, rIter, allowsAll, *crawlK, w, nil, *addtCSV)
 		return
 	}
 
